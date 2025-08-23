@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:db="http://www.mulesoft.org/schema/mule/db"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="54abd72d-6bde-43ac-8711-b1c5c065d558" >
+		<http:listener-connection host="0.0.0.0" port="8081" />
+	</http:listener-config>
+	<db:config name="Database_Config" doc:name="Database Config" doc:id="b3b23207-5538-434f-86bf-267653400657" >
+		<db:generic-connection url="jdbc:postgresql://localhost:5432/demo" user="postgres" password="123" driverClassName="org.postgresql.Driver"/>
+	</db:config>
+	<flow name="demoFlow" doc:id="b2b6d280-6c5a-45ad-9579-45af47fc477f" >
+		<http:listener doc:name="Listener" doc:id="db01843a-1ea8-4989-8375-392c8d1496be" path="/kb" config-ref="HTTP_Listener_config"/>
+		<logger level="INFO" doc:name="Logger" doc:id="762f9c2c-358a-4909-aa98-f601ecf70d2e" />
+		<db:select doc:name="Select" doc:id="37cfeca9-0929-4d46-94e6-231e802dedc1" config-ref="Database_Config">
+			<db:sql ><![CDATA[SELECT *
+FROM employees
+WHERE id = :id;
+]]></db:sql>
+			<db:input-parameters ><![CDATA[#[{ id: (attributes.queryParams.id as Number) }]]]></db:input-parameters>
+		</db:select>
+		<ee:transform doc:name="Transform Message" doc:id="061b6e5a-fc48-4300-b45d-82c2ba4d71d3" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+payload]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<logger level="INFO" doc:name="Logger" doc:id="66fd8f5e-b546-4cb9-9320-d09ed6b184f5" />
+	</flow>
+</mule>
