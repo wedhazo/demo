@@ -5,4 +5,5 @@ http:
 
 db:
   driver: "org.postgresql.Driver"
-  name: "ft_trading"
+  name: "tft_trading"
+  user: "postgres"

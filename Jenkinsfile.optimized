@@ -1,0 +1,278 @@
+pipeline {
+    agent any
+    
+    // Global environment variables
+    environment {
+        // Docker registry configuration
+        REGISTRY = 'ghcr.io'
+        IMAGE_NAME = 'wedhazo/demo'
+        
+        // Maven configuration
+        MAVEN_OPTS = '-Dmaven.repo.local=.m2/repository -Xmx1024m'
+        
+        // Mule environment
+        MULE_ENV = 'dev'
+        
+        // Credentials (Jenkins will inject these securely)
+        DB_PASSWORD = credentials('db-password')
+        GITHUB_TOKEN = credentials('github-token')
+        KUBECONFIG = credentials('kubeconfig')
+    }
+    
+    // Build tools configuration
+    tools {
+        jdk 'JDK-17'
+        maven 'Maven-3.9'
+    }
+    
+    // Trigger configuration
+    triggers {
+        githubPush()
+        pollSCM('H/5 * * * *')
+    }
+    
+    // Pipeline options
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+        timestamps()
+        skipDefaultCheckout(false)
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                echo "🔄 Checking out code from GitHub..."
+                checkout scm
+                script {
+                    env.GIT_COMMIT_SHORT = env.GIT_COMMIT.take(7)
+                    env.DOCKER_TAG = "${env.GIT_COMMIT_SHORT}"
+                    env.FULL_IMAGE_NAME = "${REGISTRY}/${IMAGE_NAME}:${env.DOCKER_TAG}"
+                }
+                echo "📦 Building image: ${env.FULL_IMAGE_NAME}"
+            }
+        }
+        
+        stage('Cache Setup') {
+            steps {
+                echo "📦 Setting up Maven cache..."
+                script {
+                    // Create .m2 directory if it doesn't exist
+                    sh 'mkdir -p .m2/repository'
+                }
+            }
+        }
+        
+        stage('Build & Test') {
+            steps {
+                echo "🏗️ Building Mule application with Maven..."
+                script {
+                    // Set environment variables for Maven build
+                    withEnv([
+                        "DB_PASSWORD=${env.DB_PASSWORD}",
+                        "MULE_ENV=${env.MULE_ENV}"
+                    ]) {
+                        sh '''
+                            echo "Using DB_PASSWORD: [REDACTED]"
+                            echo "Using MULE_ENV: $MULE_ENV"
+                            mvn -B clean package \
+                                -Dmule.env=$MULE_ENV \
+                                -Dmaven.repo.local=.m2/repository \
+                                -DskipTests=false
+                        '''
+                    }
+                }
+            }
+            post {
+                always {
+                    // Archive build artifacts
+                    archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+                    
+                    // Publish test results if they exist
+                    publishTestResults testResultsPattern: 'target/surefire-reports/*.xml', allowEmptyResults: true
+                }
+            }
+        }
+        
+        stage('Docker Build') {
+            steps {
+                echo "🐳 Building Docker image..."
+                script {
+                    // Build Docker image with build args
+                    sh """
+                        docker build \
+                            --build-arg DB_PASSWORD='${env.DB_PASSWORD}' \
+                            --build-arg MULE_ENV='${env.MULE_ENV}' \
+                            -f Dockerfile.simulator \
+                            -t ${env.FULL_IMAGE_NAME} \
+                            -t ${REGISTRY}/${IMAGE_NAME}:latest \
+                            .
+                    """
+                }
+            }
+        }
+        
+        stage('Docker Push') {
+            steps {
+                echo "📤 Pushing Docker image to registry..."
+                script {
+                    // Login to GitHub Container Registry
+                    withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                        sh '''
+                            echo $GITHUB_TOKEN | docker login ghcr.io -u wedhazo --password-stdin
+                        '''
+                    }
+                    
+                    // Push both tagged and latest images
+                    sh """
+                        docker push ${env.FULL_IMAGE_NAME}
+                        docker push ${REGISTRY}/${IMAGE_NAME}:latest
+                    """
+                }
+            }
+        }
+        
+        stage('Deploy to Kubernetes') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'develop'
+                }
+            }
+            steps {
+                echo "☸️ Deploying to Kubernetes..."
+                script {
+                    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+                        sh '''
+                            # Copy kubeconfig to standard location
+                            mkdir -p ~/.kube
+                            cp $KUBECONFIG_FILE ~/.kube/config
+                            
+                            # Update image in deployment
+                            kubectl set image deployment/mule-app mule-app=$FULL_IMAGE_NAME -n mule-dev
+                            
+                            # Apply all Kubernetes manifests
+                            kubectl apply -f k8s/
+                            
+                            # Wait for rollout to complete
+                            kubectl rollout status deployment/mule-app -n mule-dev --timeout=300s
+                            
+                            # Verify deployment
+                            kubectl get pods -n mule-dev -l app=mule-app
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Health Check') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'develop'
+                }
+            }
+            steps {
+                echo "🏥 Running health checks..."
+                script {
+                    sh '''
+                        # Wait for application to be ready
+                        sleep 30
+                        
+                        # Port forward for testing
+                        kubectl port-forward -n mule-dev svc/mule-app-service 8085:8081 &
+                        PORT_FORWARD_PID=$!
+                        
+                        # Wait for port forward to establish
+                        sleep 5
+                        
+                        # Test the endpoint
+                        if curl -f -s http://localhost:8085/kb > /dev/null; then
+                            echo "✅ Health check passed!"
+                        else
+                            echo "❌ Health check failed!"
+                            exit 1
+                        fi
+                        
+                        # Clean up port forward
+                        kill $PORT_FORWARD_PID || true
+                    '''
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo "🧹 Cleaning up workspace..."
+            
+            // Clean up Docker images to save space
+            sh '''
+                docker image prune -f
+                docker system prune -f
+            '''
+            
+            // Archive logs
+            archiveArtifacts artifacts: 'target/logs/**/*', allowEmptyArchive: true
+        }
+        
+        success {
+            echo "✅ Pipeline completed successfully!"
+            
+            // Send success notification
+            script {
+                if (env.BRANCH_NAME == 'main') {
+                    slackSend(
+                        channel: '#deployments',
+                        color: 'good',
+                        message: """
+🚀 *Mule Trading App Deployed Successfully!*
+• Build: #${env.BUILD_NUMBER}
+• Branch: ${env.BRANCH_NAME}
+• Commit: ${env.GIT_COMMIT_SHORT}
+• Image: ${env.FULL_IMAGE_NAME}
+• Duration: ${currentBuild.durationString}
+                        """
+                    )
+                }
+            }
+        }
+        
+        failure {
+            echo "❌ Pipeline failed!"
+            
+            // Send failure notification
+            slackSend(
+                channel: '#deployments',
+                color: 'danger',
+                message: """
+❌ *Mule Trading App Deployment Failed!*
+• Build: #${env.BUILD_NUMBER}
+• Branch: ${env.BRANCH_NAME}
+• Stage: ${env.STAGE_NAME}
+• Check: ${env.BUILD_URL}
+                """
+            )
+            
+            // Email notification for main branch failures
+            script {
+                if (env.BRANCH_NAME == 'main') {
+                    emailext(
+                        subject: "❌ Production Deployment Failed - Build #${env.BUILD_NUMBER}",
+                        body: """
+                            <h2>Deployment Failed!</h2>
+                            <p><strong>Branch:</strong> ${env.BRANCH_NAME}</p>
+                            <p><strong>Commit:</strong> ${env.GIT_COMMIT}</p>
+                            <p><strong>Build URL:</strong> ${env.BUILD_URL}</p>
+                        """,
+                        to: 'devops-team@company.com'
+                    )
+                }
+            }
+        }
+        
+        unstable {
+            echo "⚠️ Pipeline completed with warnings"
+        }
+    }
+}

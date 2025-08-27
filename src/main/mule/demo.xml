@@ -24,7 +24,7 @@ http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/cu
         url="${db.url}"
         driverClassName="${db.driver}"
         user="${db.user}"
-        password="${db.password}"/>
+        password="${env:DB_PASSWORD}"/>
   </db:config>
 
   <!-- Simple flow to query data -->
