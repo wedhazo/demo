@@ -1,0 +1,236 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns="http://www.mulesoft.org/schema/mule/core"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd
+        http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd">
+
+    <!-- MUnit Configuration for demoFlow tests -->
+    <munit:config name="demoFlow-test.xml" />
+
+    <!-- Test Suite Setup -->
+    <munit:before-suite name="before-suite" description="Initialize test environment">
+        <munit:execution>
+            <logger level="INFO" message="🧪 Starting MUnit test suite for demoFlow"/>
+        </munit:execution>
+    </munit:before-suite>
+
+    <!-- Test Suite Cleanup -->
+    <munit:after-suite name="after-suite" description="Cleanup test environment">
+        <munit:execution>
+            <logger level="INFO" message="✅ Completed MUnit test suite for demoFlow"/>
+        </munit:execution>
+    </munit:after-suite>
+
+    <!-- ================== POSITIVE TESTS ================== -->
+
+    <!-- Test 1: Successful DB query returns NVDA data -->
+    <munit:test name="test-demoFlow-success-nvda-data" description="Test successful retrieval of NVDA market data">
+        
+        <!-- Setup: Mock database response -->
+        <munit:behavior>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute whereValue="Database_Config" attributeName="config-ref"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value='#[[
+                        {
+                            "symbol": "NVDA",
+                            "timestamp": "2025-08-27T14:30:00.000Z",
+                            "open_price": "125.50",
+                            "high_price": "127.80",
+                            "low_price": "124.90",
+                            "close_price": "126.75",
+                            "volume": "15420000"
+                        },
+                        {
+                            "symbol": "NVDA",
+                            "timestamp": "2025-08-27T14:29:00.000Z", 
+                            "open_price": "125.20",
+                            "high_price": "125.60",
+                            "low_price": "125.10",
+                            "close_price": "125.50",
+                            "volume": "8750000"
+                        },
+                        {
+                            "symbol": "NVDA",
+                            "timestamp": "2025-08-27T14:28:00.000Z",
+                            "open_price": "124.80",
+                            "high_price": "125.30",
+                            "low_price": "124.75",
+                            "close_price": "125.20",
+                            "volume": "12300000"
+                        }
+                    ]]' mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <!-- Execution: Call the flow -->
+        <munit:execution>
+            <http:request method="GET" config-ref="HTTP_Request_configuration" path="/kb">
+                <http:headers><![CDATA[#[output application/java
+---
+{
+    "Content-Type" : "application/json"
+}]]]></http:headers>
+            </http:request>
+        </munit:execution>
+
+        <!-- Validation: Verify response -->
+        <munit:validation>
+            <!-- Assert HTTP status is 200 -->
+            <munit-tools:assert-equals actual="#[attributes.statusCode]" expected="#[200]" message="HTTP status should be 200"/>
+            
+            <!-- Assert payload is not empty -->
+            <munit-tools:assert-that expression="#[payload]" is="#[MunitTools::notNullValue()]" message="Payload should not be null"/>
+            <munit-tools:assert-that expression="#[sizeOf(payload)]" is="#[MunitTools::greaterThan(0)]" message="Payload should contain data"/>
+            
+            <!-- Assert payload structure -->
+            <munit-tools:assert-that expression="#[payload[0].symbol]" is="#[MunitTools::equalTo('NVDA')]" message="First record should be NVDA"/>
+            <munit-tools:assert-that expression="#[payload[0].timestamp]" is="#[MunitTools::notNullValue()]" message="Timestamp should exist"/>
+            <munit-tools:assert-that expression="#[payload[0].open_price]" is="#[MunitTools::notNullValue()]" message="Open price should exist"/>
+            <munit-tools:assert-that expression="#[payload[0].high_price]" is="#[MunitTools::notNullValue()]" message="High price should exist"/>
+            <munit-tools:assert-that expression="#[payload[0].low_price]" is="#[MunitTools::notNullValue()]" message="Low price should exist"/>
+            <munit-tools:assert-that expression="#[payload[0].close_price]" is="#[MunitTools::notNullValue()]" message="Close price should exist"/>
+            <munit-tools:assert-that expression="#[payload[0].volume]" is="#[MunitTools::notNullValue()]" message="Volume should exist"/>
+            
+            <!-- Assert data types -->
+            <munit-tools:assert-that expression="#[payload[0].open_price as String]" is="#[MunitTools::matchesRegex('^\\d+\\.\\d+$')]" message="Open price should be numeric"/>
+            <munit-tools:assert-that expression="#[payload[0].volume as String]" is="#[MunitTools::matchesRegex('^\\d+$')]" message="Volume should be integer"/>
+            
+            <!-- Log success -->
+            <logger level="INFO" message="✅ Test passed: demoFlow returned valid NVDA data with #[sizeOf(payload)] records"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- Test 2: Empty database result -->
+    <munit:test name="test-demoFlow-empty-result" description="Test handling of empty database result">
+        
+        <!-- Setup: Mock empty database response -->
+        <munit:behavior>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute whereValue="Database_Config" attributeName="config-ref"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[]]" mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <!-- Execution: Call the flow -->
+        <munit:execution>
+            <http:request method="GET" config-ref="HTTP_Request_configuration" path="/kb"/>
+        </munit:execution>
+
+        <!-- Validation: Verify response handles empty result gracefully -->
+        <munit:validation>
+            <munit-tools:assert-equals actual="#[attributes.statusCode]" expected="#[200]" message="HTTP status should be 200 even for empty results"/>
+            <munit-tools:assert-that expression="#[payload]" is="#[MunitTools::notNullValue()]" message="Payload should not be null"/>
+            <munit-tools:assert-equals actual="#[sizeOf(payload)]" expected="#[0]" message="Payload should be empty array"/>
+            <logger level="INFO" message="✅ Test passed: demoFlow handled empty result gracefully"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- ================== NEGATIVE TESTS ================== -->
+
+    <!-- Test 3: Database connection error -->
+    <munit:test name="test-demoFlow-database-error" description="Test handling of database connection error">
+        
+        <!-- Setup: Mock database error -->
+        <munit:behavior>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute whereValue="Database_Config" attributeName="config-ref"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="DB:CONNECTIVITY"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <!-- Execution: Call the flow -->
+        <munit:execution>
+            <http:request method="GET" config-ref="HTTP_Request_configuration" path="/kb"/>
+        </munit:execution>
+
+        <!-- Validation: Verify error handling -->
+        <munit:validation>
+            <!-- Should return 5xx status for server errors -->
+            <munit-tools:assert-that expression="#[attributes.statusCode]" is="#[MunitTools::greaterThanOrEqualTo(500)]" message="Should return 5xx status for database errors"/>
+            <logger level="INFO" message="✅ Test passed: demoFlow handled database error with status #[attributes.statusCode]"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- Test 4: Database timeout error -->
+    <munit:test name="test-demoFlow-database-timeout" description="Test handling of database timeout">
+        
+        <!-- Setup: Mock database timeout -->
+        <munit:behavior>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute whereValue="Database_Config" attributeName="config-ref"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="DB:QUERY_EXECUTION" description="Connection timeout"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <!-- Execution: Call the flow -->
+        <munit:execution>
+            <http:request method="GET" config-ref="HTTP_Request_configuration" path="/kb"/>
+        </munit:execution>
+
+        <!-- Validation: Verify timeout handling -->
+        <munit:validation>
+            <munit-tools:assert-that expression="#[attributes.statusCode]" is="#[MunitTools::greaterThanOrEqualTo(500)]" message="Should return 5xx status for timeout errors"/>
+            <logger level="INFO" message="✅ Test passed: demoFlow handled database timeout with status #[attributes.statusCode]"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- ================== CONFIGURATION TESTS ================== -->
+
+    <!-- Test 5: Property resolution test -->
+    <munit:test name="test-demoFlow-property-resolution" description="Test that properties are resolved correctly">
+        
+        <!-- Setup: Mock successful response -->
+        <munit:behavior>
+            <munit-tools:mock-when processor="db:select">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute whereValue="Database_Config" attributeName="config-ref"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value='#[[{"symbol": "NVDA", "timestamp": "2025-08-27T14:30:00.000Z", "close_price": "126.75"}]]' mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <!-- Execution: Call the flow -->
+        <munit:execution>
+            <http:request method="GET" config-ref="HTTP_Request_configuration" path="/kb"/>
+        </munit:execution>
+
+        <!-- Validation: Verify properties work -->
+        <munit:validation>
+            <munit-tools:assert-equals actual="#[attributes.statusCode]" expected="#[200]" message="Properties should resolve correctly for successful request"/>
+            <logger level="INFO" message="✅ Test passed: Property resolution working correctly"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- HTTP Request Configuration for tests -->
+    <http:request-config name="HTTP_Request_configuration" doc:name="HTTP Request configuration">
+        <http:request-connection host="${http.listener.host}" port="${http.listener.port}"/>
+    </http:request-config>
+
+</mule>

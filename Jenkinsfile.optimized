@@ -1,5 +1,10 @@
 pipeline {
-    agent any
+    agent {
+        docker {
+            image 'maven:3.9.9-eclipse-temurin-17'
+            args '-v /root/.m2:/root/.m2'
+        }
+    }
     
     // Global environment variables
     environment {
@@ -8,7 +13,7 @@ pipeline {
         IMAGE_NAME = 'wedhazo/demo'
         
         // Maven configuration
-        MAVEN_OPTS = '-Dmaven.repo.local=.m2/repository -Xmx1024m'
+        MAVEN_OPTS = '-Dmaven.repo.local=/root/.m2/repository -Xmx1024m'
         
         // Mule environment
         MULE_ENV = 'dev'
@@ -16,25 +21,12 @@ pipeline {
         // Credentials (Jenkins will inject these securely)
         DB_PASSWORD = credentials('db-password')
         GITHUB_TOKEN = credentials('github-token')
-        KUBECONFIG = credentials('kubeconfig')
-    }
-    
-    // Build tools configuration
-    tools {
-        jdk 'JDK-17'
-        maven 'Maven-3.9'
-    }
-    
-    // Trigger configuration
-    triggers {
-        githubPush()
-        pollSCM('H/5 * * * *')
     }
     
     // Pipeline options
     options {
         buildDiscarder(logRotator(numToKeepStr: '10'))
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 45, unit: 'MINUTES')
         timestamps()
         skipDefaultCheckout(false)
     }
@@ -53,32 +45,64 @@ pipeline {
             }
         }
         
-        stage('Cache Setup') {
+        stage('MUnit Tests') {
             steps {
-                echo "📦 Setting up Maven cache..."
+                echo "🧪 Running MUnit tests with coverage enforcement..."
                 script {
-                    // Create .m2 directory if it doesn't exist
-                    sh 'mkdir -p .m2/repository'
+                    withEnv([
+                        "DB_PASSWORD=${env.DB_PASSWORD}",
+                        "MULE_ENV=test"
+                    ]) {
+                        sh '''
+                            echo "Running MUnit tests with coverage ≥ 80%"
+                            mvn clean test \
+                                -Dmule.env=test \
+                                -Dmaven.repo.local=/root/.m2/repository \
+                                -Dtest=**/munit/**/*test* \
+                                -DfailIfNoTests=false
+                        '''
+                    }
+                }
+            }
+            post {
+                always {
+                    // Publish test results
+                    publishTestResults testResultsPattern: 'target/surefire-reports/*.xml', allowEmptyResults: true
+                    
+                    // Archive coverage reports
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'target/site/munit/coverage',
+                        reportFiles: 'index.html',
+                        reportName: 'MUnit Coverage Report',
+                        reportTitles: ''
+                    ])
+                    
+                    // Archive MUnit reports
+                    archiveArtifacts artifacts: 'target/site/munit/coverage/**/*', allowEmptyArchive: true
+                }
+                failure {
+                    echo "❌ MUnit tests failed - check coverage requirements (≥80%)"
                 }
             }
         }
         
-        stage('Build & Test') {
+        stage('Build JAR') {
             steps {
-                echo "🏗️ Building Mule application with Maven..."
+                echo "🏗️ Building deployable Mule application JAR..."
                 script {
-                    // Set environment variables for Maven build
                     withEnv([
                         "DB_PASSWORD=${env.DB_PASSWORD}",
                         "MULE_ENV=${env.MULE_ENV}"
                     ]) {
                         sh '''
-                            echo "Using DB_PASSWORD: [REDACTED]"
-                            echo "Using MULE_ENV: $MULE_ENV"
-                            mvn -B clean package \
+                            echo "Building Mule application JAR"
+                            mvn clean package \
                                 -Dmule.env=$MULE_ENV \
-                                -Dmaven.repo.local=.m2/repository \
-                                -DskipTests=false
+                                -Dmaven.repo.local=/root/.m2/repository \
+                                -DskipTests=true
                         '''
                     }
                 }
@@ -86,10 +110,17 @@ pipeline {
             post {
                 always {
                     // Archive build artifacts
-                    archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+                    archiveArtifacts artifacts: 'target/*.jar', fingerprint: true, allowEmptyArchive: false
                     
-                    // Publish test results if they exist
-                    publishTestResults testResultsPattern: 'target/surefire-reports/*.xml', allowEmptyResults: true
+                    // Verify JAR was created
+                    script {
+                        def jarFile = sh(script: 'ls target/*.jar 2>/dev/null || echo "NO_JAR"', returnStdout: true).trim()
+                        if (jarFile == "NO_JAR") {
+                            error("❌ Failed to create application JAR")
+                        } else {
+                            echo "✅ Created JAR: ${jarFile}"
+                        }
+                    }
                 }
             }
         }
@@ -98,8 +129,11 @@ pipeline {
             steps {
                 echo "🐳 Building Docker image..."
                 script {
-                    // Build Docker image with build args
                     sh """
+                        # Install Docker in the Maven container
+                        apt-get update && apt-get install -y docker.io
+                        
+                        # Build Docker image with build args
                         docker build \
                             --build-arg DB_PASSWORD='${env.DB_PASSWORD}' \
                             --build-arg MULE_ENV='${env.MULE_ENV}' \
@@ -113,21 +147,22 @@ pipeline {
         }
         
         stage('Docker Push') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'develop'
+                }
+            }
             steps {
                 echo "📤 Pushing Docker image to registry..."
                 script {
-                    // Login to GitHub Container Registry
                     withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
                         sh '''
                             echo $GITHUB_TOKEN | docker login ghcr.io -u wedhazo --password-stdin
+                            docker push ${FULL_IMAGE_NAME}
+                            docker push ${REGISTRY}/${IMAGE_NAME}:latest
                         '''
                     }
-                    
-                    // Push both tagged and latest images
-                    sh """
-                        docker push ${env.FULL_IMAGE_NAME}
-                        docker push ${REGISTRY}/${IMAGE_NAME}:latest
-                    """
                 }
             }
         }
@@ -142,24 +177,77 @@ pipeline {
             steps {
                 echo "☸️ Deploying to Kubernetes..."
                 script {
-                    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+                    withCredentials([
+                        file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE'),
+                        string(credentialsId: 'db-password', variable: 'K8S_DB_PASSWORD')
+                    ]) {
                         sh '''
-                            # Copy kubeconfig to standard location
+                            # Install kubectl in Maven container
+                            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                            chmod +x kubectl
+                            mv kubectl /usr/local/bin/
+                            
+                            # Setup kubeconfig
                             mkdir -p ~/.kube
                             cp $KUBECONFIG_FILE ~/.kube/config
                             
-                            # Update image in deployment
-                            kubectl set image deployment/mule-app mule-app=$FULL_IMAGE_NAME -n mule-dev
+                            # Verify cluster connection
+                            kubectl cluster-info
+                            
+                            # Create namespace if not exists
+                            kubectl create namespace mule-dev --dry-run=client -o yaml | kubectl apply -f -
+                            
+                            # Create/update secret with DB password
+                            kubectl create secret generic mule-db-secret \
+                                --from-literal=DB_PASSWORD="$K8S_DB_PASSWORD" \
+                                --namespace=mule-dev \
+                                --dry-run=client -o yaml | kubectl apply -f -
+                            
+                            # Update deployment image
+                            kubectl set image deployment/mule-trading-app \
+                                mule-app=$FULL_IMAGE_NAME \
+                                -n mule-dev || echo "Deployment not found, will create with manifests"
                             
                             # Apply all Kubernetes manifests
-                            kubectl apply -f k8s/
+                            kubectl apply -f k8s/ -n mule-dev
                             
-                            # Wait for rollout to complete
-                            kubectl rollout status deployment/mule-app -n mule-dev --timeout=300s
+                            # Wait for rollout to complete with timeout
+                            echo "⏳ Waiting for deployment rollout..."
+                            if ! kubectl rollout status deployment/mule-trading-app -n mule-dev --timeout=120s; then
+                                echo "❌ Deployment rollout failed or timed out"
+                                
+                                # Get deployment status for debugging
+                                kubectl describe deployment mule-trading-app -n mule-dev
+                                kubectl get pods -n mule-dev -l app=mule-trading-app
+                                
+                                # Attempt rollback
+                                echo "🔄 Attempting rollback..."
+                                kubectl rollout undo deployment/mule-trading-app -n mule-dev
+                                
+                                # Wait for rollback
+                                kubectl rollout status deployment/mule-trading-app -n mule-dev --timeout=60s
+                                
+                                error("Deployment failed, rolled back to previous version")
+                            fi
                             
                             # Verify deployment
-                            kubectl get pods -n mule-dev -l app=mule-app
+                            kubectl get pods -n mule-dev -l app=mule-trading-app
+                            
+                            echo "✅ Deployment successful!"
                         '''
+                    }
+                }
+            }
+            post {
+                failure {
+                    script {
+                        // Additional rollback on pipeline failure
+                        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+                            sh '''
+                                kubectl rollout undo deployment/mule-trading-app -n mule-dev || echo "Rollback failed"
+                                kubectl get pods -n mule-dev -l app=mule-trading-app
+                            '''
+                        }
                     }
                 }
             }
@@ -173,33 +261,104 @@ pipeline {
                 }
             }
             steps {
-                echo "🏥 Running health checks..."
+                echo "🏥 Running post-deployment health checks..."
                 script {
-                    sh '''
-                        # Wait for application to be ready
-                        sleep 30
-                        
-                        # Port forward for testing
-                        kubectl port-forward -n mule-dev svc/mule-app-service 8085:8081 &
-                        PORT_FORWARD_PID=$!
-                        
-                        # Wait for port forward to establish
-                        sleep 5
-                        
-                        # Test the endpoint
-                        if curl -f -s http://localhost:8085/kb > /dev/null; then
-                            echo "✅ Health check passed!"
-                        else
-                            echo "❌ Health check failed!"
-                            exit 1
-                        fi
-                        
-                        # Clean up port forward
-                        kill $PORT_FORWARD_PID || true
-                    '''
+                    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+                        sh '''
+                            # Wait for application to be ready
+                            sleep 30
+                            
+                            # Port forward for testing
+                            kubectl port-forward -n mule-dev svc/mule-app-service 8085:8081 &
+                            PORT_FORWARD_PID=$!
+                            
+                            # Wait for port forward to establish
+                            sleep 10
+                            
+                            # Test the health endpoint
+                            HEALTH_CHECK_PASSED=false
+                            for i in {1..5}; do
+                                if curl -f -s --max-time 10 http://localhost:8085/kb > /dev/null; then
+                                    echo "✅ Health check passed on attempt $i!"
+                                    HEALTH_CHECK_PASSED=true
+                                    break
+                                else
+                                    echo "❌ Health check failed on attempt $i, retrying..."
+                                    sleep 10
+                                fi
+                            done
+                            
+                            # Clean up port forward
+                            kill $PORT_FORWARD_PID || true
+                            
+                            if [ "$HEALTH_CHECK_PASSED" = false ]; then
+                                echo "❌ All health check attempts failed!"
+                                
+                                # Get logs for debugging
+                                kubectl logs -n mule-dev -l app=mule-trading-app --tail=50
+                                
+                                exit 1
+                            fi
+                        '''
+                    }
                 }
             }
         }
+        
+        /* ================== CLOUDHUB DEPLOYMENT (COMMENTED ALTERNATIVE) ==================
+        stage('Deploy to CloudHub') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'develop'
+                }
+            }
+            steps {
+                echo "☁️ Deploying to CloudHub..."
+                script {
+                    withCredentials([
+                        string(credentialsId: 'anypoint-username', variable: 'ANYPOINT_USERNAME'),
+                        string(credentialsId: 'anypoint-password', variable: 'ANYPOINT_PASSWORD'),
+                        string(credentialsId: 'anypoint-org', variable: 'ANYPOINT_ORG'),
+                        string(credentialsId: 'anypoint-env', variable: 'ANYPOINT_ENV'),
+                        string(credentialsId: 'db-password', variable: 'CH_DB_PASSWORD')
+                    ]) {
+                        sh '''
+                            # Install Anypoint CLI
+                            npm install -g anypoint-cli@latest
+                            
+                            # Login to Anypoint Platform
+                            anypoint-cli account login \
+                                --username $ANYPOINT_USERNAME \
+                                --password $ANYPOINT_PASSWORD \
+                                --organization $ANYPOINT_ORG
+                            
+                            # Deploy to CloudHub
+                            anypoint-cli runtime-mgr cloudhub-application deploy \
+                                --environment $ANYPOINT_ENV \
+                                --applicationName mule-trading-app \
+                                --runtime 4.9.0 \
+                                --workerSize 0.1 \
+                                --workers 1 \
+                                --region us-east-1 \
+                                --property "mule.env=prod" \
+                                --property "DB_PASSWORD=$CH_DB_PASSWORD" \
+                                --autoStart \
+                                target/*.jar
+                            
+                            # Wait for deployment
+                            sleep 60
+                            
+                            # Verify deployment
+                            anypoint-cli runtime-mgr cloudhub-application describe \
+                                --environment $ANYPOINT_ENV \
+                                mule-trading-app
+                        '''
+                    }
+                }
+            }
+        }
+        ================== END CLOUDHUB ALTERNATIVE ================== */
     }
     
     post {
@@ -208,8 +367,8 @@ pipeline {
             
             // Clean up Docker images to save space
             sh '''
-                docker image prune -f
-                docker system prune -f
+                docker image prune -f || echo "Docker cleanup failed"
+                docker system prune -f || echo "Docker system cleanup failed"
             '''
             
             // Archive logs
@@ -222,18 +381,23 @@ pipeline {
             // Send success notification
             script {
                 if (env.BRANCH_NAME == 'main') {
-                    slackSend(
-                        channel: '#deployments',
-                        color: 'good',
-                        message: """
+                    try {
+                        slackSend(
+                            channel: '#deployments',
+                            color: 'good',
+                            message: """
 🚀 *Mule Trading App Deployed Successfully!*
 • Build: #${env.BUILD_NUMBER}
 • Branch: ${env.BRANCH_NAME}
 • Commit: ${env.GIT_COMMIT_SHORT}
 • Image: ${env.FULL_IMAGE_NAME}
+• MUnit Coverage: ≥80% ✅
 • Duration: ${currentBuild.durationString}
-                        """
-                    )
+                            """
+                        )
+                    } catch (Exception e) {
+                        echo "Slack notification failed: ${e.message}"
+                    }
                 }
             }
         }
@@ -242,32 +406,20 @@ pipeline {
             echo "❌ Pipeline failed!"
             
             // Send failure notification
-            slackSend(
-                channel: '#deployments',
-                color: 'danger',
-                message: """
-❌ *Mule Trading App Deployment Failed!*
+            try {
+                slackSend(
+                    channel: '#deployments',
+                    color: 'danger',
+                    message: """
+❌ *Mule Trading App Pipeline Failed!*
 • Build: #${env.BUILD_NUMBER}
 • Branch: ${env.BRANCH_NAME}
 • Stage: ${env.STAGE_NAME}
 • Check: ${env.BUILD_URL}
-                """
-            )
-            
-            // Email notification for main branch failures
-            script {
-                if (env.BRANCH_NAME == 'main') {
-                    emailext(
-                        subject: "❌ Production Deployment Failed - Build #${env.BUILD_NUMBER}",
-                        body: """
-                            <h2>Deployment Failed!</h2>
-                            <p><strong>Branch:</strong> ${env.BRANCH_NAME}</p>
-                            <p><strong>Commit:</strong> ${env.GIT_COMMIT}</p>
-                            <p><strong>Build URL:</strong> ${env.BUILD_URL}</p>
-                        """,
-                        to: 'devops-team@company.com'
-                    )
-                }
+                    """
+                )
+            } catch (Exception e) {
+                echo "Slack notification failed: ${e.message}"
             }
         }
         

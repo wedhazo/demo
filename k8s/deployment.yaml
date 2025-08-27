@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mule-trading-app
+  namespace: mule-dev
+  labels:
+    app: mule-trading-app
+    version: v1
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: mule-trading-app
+  template:
+    metadata:
+      labels:
+        app: mule-trading-app
+        version: v1
+    spec:
+      containers:
+      - name: mule-app
+        image: ghcr.io/wedhazo/demo:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8081
+          name: http
+          protocol: TCP
+        env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mule-db-secret
+              key: DB_PASSWORD
+        - name: MULE_ENV
+          value: "dev"
+        - name: JAVA_OPTS
+          value: "-Xmx1024m -Xms512m -Dfile.encoding=UTF-8"
+        
+        # Health checks for /kb endpoint
+        livenessProbe:
+          httpGet:
+            path: /kb
+            port: 8081
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+          successThreshold: 1
+        
+        readinessProbe:
+          httpGet:
+            path: /kb
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        
+        # Resource limits and requests
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1024Mi"
+            cpu: "500m"
+        
+        # Volume mounts for logs (optional)
+        volumeMounts:
+        - name: app-logs
+          mountPath: /opt/mule/logs
+      
+      # Image pull secrets for private registry
+      imagePullSecrets:
+      - name: ghcr-secret
+      
+      # Volumes for logs
+      volumes:
+      - name: app-logs
+        emptyDir: {}
+      
+      # Pod security context
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      
+      # Restart policy
+      restartPolicy: Always
+      
+      # DNS policy
+      dnsPolicy: ClusterFirst
+
+---
+# HorizontalPodAutoscaler for automatic scaling
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mule-trading-app-hpa
+  namespace: mule-dev
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mule-trading-app
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Pods
+        value: 2
+        periodSeconds: 60
