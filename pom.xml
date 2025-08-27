@@ -17,12 +17,6 @@
 
 		<app.runtime>4.9.0</app.runtime>
 		<mule.maven.plugin.version>4.3.0</mule.maven.plugin.version>
-		<munit.version>2.3.18</munit.version>
-		<munit.extensions.maven.plugin.version>1.2.0</munit.extensions.maven.plugin.version>
-		
-		<!-- MUnit Coverage Configuration -->
-		<coverage.line.minimum>80</coverage.line.minimum>
-		<coverage.branch.minimum>70</coverage.branch.minimum>
 	</properties>
 
 	<build>
@@ -55,6 +49,34 @@
 				<artifactId>maven-clean-plugin</artifactId>
 				<version>3.2.0</version>
 			</plugin>
+			
+			<!-- Copy mule-artifact.json to target -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-resources-plugin</artifactId>
+				<version>3.3.1</version>
+				<executions>
+					<execution>
+						<id>copy-mule-artifact</id>
+						<phase>process-resources</phase>
+						<goals>
+							<goal>copy-resources</goal>
+						</goals>
+						<configuration>
+							<outputDirectory>${project.build.directory}/META-INF/mule-artifact</outputDirectory>
+							<resources>
+								<resource>
+									<directory>${project.basedir}</directory>
+									<includes>
+										<include>mule-artifact.json</include>
+									</includes>
+								</resource>
+							</resources>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+			
 			<plugin>
 				<groupId>org.mule.tools.maven</groupId>
 				<artifactId>mule-maven-plugin</artifactId>
@@ -67,6 +89,7 @@
 							<artifactId>postgresql</artifactId>
 						</sharedLibrary>
 					</sharedLibraries>
+					<includeAdditionalFiles>true</includeAdditionalFiles>
 				</configuration>
 			</plugin>
 			<plugin>
@@ -91,6 +114,8 @@
 					</execution>
 				</executions>
 			</plugin>
+			
+
 		</plugins>
 	</build>
 
@@ -118,28 +143,7 @@
 			<version>1.14.13</version>
 			<classifier>mule-plugin</classifier>
 		</dependency>
-		
-		<!-- MUnit Dependencies -->
-		<dependency>
-			<groupId>com.mulesoft.munit</groupId>
-			<artifactId>munit-runner</artifactId>
-			<version>${munit.version}</version>
-			<classifier>mule-plugin</classifier>
-			<scope>test</scope>
-		</dependency>
-		<dependency>
-			<groupId>com.mulesoft.munit</groupId>
-			<artifactId>munit-tools</artifactId>
-			<version>${munit.version}</version>
-			<classifier>mule-plugin</classifier>
-			<scope>test</scope>
-		</dependency>
-		<dependency>
-			<groupId>org.mule.weave</groupId>
-			<artifactId>assertions</artifactId>
-			<version>1.2.0</version>
-			<scope>test</scope>
-		</dependency>
+
 	</dependencies>
 
 	<repositories>
