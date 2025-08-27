@@ -1,0 +1,53 @@
+# PostgreSQL initialization script
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-script
+data:
+  init.sql: |
+    -- Create the trading database schema
+    CREATE TABLE IF NOT EXISTS market_data (
+        id SERIAL PRIMARY KEY,
+        symbol VARCHAR(10) NOT NULL,
+        timestamp TIMESTAMP NOT NULL,
+        open_price DECIMAL(10,4),
+        high_price DECIMAL(10,4),
+        low_price DECIMAL(10,4),
+        close_price DECIMAL(10,4),
+        volume BIGINT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Create index for better query performance
+    CREATE INDEX IF NOT EXISTS idx_market_data_symbol_timestamp ON market_data(symbol, timestamp DESC);
+    
+    -- Insert sample NVDA data if not exists
+    INSERT INTO market_data (symbol, timestamp, open_price, high_price, low_price, close_price, volume)
+    SELECT 'NVDA', '2025-08-20 05:48:00', 176.34, 176.38, 176.28, 176.38, 6052
+    WHERE NOT EXISTS (SELECT 1 FROM market_data WHERE symbol = 'NVDA' AND timestamp = '2025-08-20 05:48:00');
+    
+    INSERT INTO market_data (symbol, timestamp, open_price, high_price, low_price, close_price, volume)
+    SELECT 'NVDA', '2025-08-20 05:47:00', 176.33, 176.38, 176.33, 176.34, 4535
+    WHERE NOT EXISTS (SELECT 1 FROM market_data WHERE symbol = 'NVDA' AND timestamp = '2025-08-20 05:47:00');
+    
+    INSERT INTO market_data (symbol, timestamp, open_price, high_price, low_price, close_price, volume)
+    SELECT 'NVDA', '2025-08-20 05:46:00', 176.22, 176.34, 176.22, 176.33, 10681
+    WHERE NOT EXISTS (SELECT 1 FROM market_data WHERE symbol = 'NVDA' AND timestamp = '2025-08-20 05:46:00');
+    
+    -- Create users for different environments
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'ft_reader') THEN
+            CREATE USER ft_reader WITH PASSWORD 'test_password';
+        END IF;
+        
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'ft_app') THEN
+            CREATE USER ft_app WITH PASSWORD 'prod_super_secure_password';
+        END IF;
+    END
+    $$;
+    
+    -- Grant permissions
+    GRANT SELECT ON market_data TO ft_reader;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON market_data TO ft_app;
+    GRANT USAGE, SELECT ON SEQUENCE market_data_id_seq TO ft_app;

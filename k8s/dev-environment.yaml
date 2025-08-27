@@ -1,0 +1,87 @@
+# Development Environment ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mule-app-config
+  namespace: mule-dev
+data:
+  MULE_ENV: "dev"
+  DB_HOST: "postgres-dev.mule-dev.svc.cluster.local"
+  DB_PORT: "5432"
+  DB_NAME: "ft_trading"
+  DB_USER: "postgres"
+  HTTP_HOST: "0.0.0.0"
+  HTTP_PORT: "8081"
+---
+# Development Environment Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mule-app-secrets
+  namespace: mule-dev
+type: Opaque
+data:
+  DB_PASSWORD: YmVyaWhhQDEyM0tCIQ==  # beriha@123KB! base64 encoded
+---
+# Development PostgreSQL Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-dev
+  namespace: mule-dev
+spec:
+  selector:
+    app: postgres-dev
+  ports:
+  - port: 5432
+    targetPort: 5432
+  type: ClusterIP
+---
+# Development PostgreSQL Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-dev
+  namespace: mule-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-dev
+  template:
+    metadata:
+      labels:
+        app: postgres-dev
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15
+        env:
+        - name: POSTGRES_DB
+          value: "ft_trading"
+        - name: POSTGRES_USER
+          value: "postgres"
+        - name: POSTGRES_PASSWORD
+          value: "beriha@123KB!"
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: init-script
+          mountPath: /docker-entrypoint-initdb.d
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: postgres-storage
+        emptyDir: {}
+      - name: init-script
+        configMap:
+          name: postgres-init-script

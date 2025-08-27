@@ -1,0 +1,6 @@
+db:
+  host: "localhost"
+  port: "5432"
+  url: "jdbc:postgresql://${db.host}:${db.port}/${db.name}?sslmode=disable"
+  user: "postgres"
+  password: "beriha@123KB!"  # For dev only - use env var in prod

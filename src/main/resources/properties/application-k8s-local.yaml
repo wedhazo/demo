@@ -1,0 +1,5 @@
+db:
+  host: "postgres.default.svc.cluster.local"
+  port: "5432"
+  url: "jdbc:postgresql://${db.host}:${db.port}/${db.name}?sslmode=require"
+  user: "postgres"

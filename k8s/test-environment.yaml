@@ -1,0 +1,88 @@
+# Test Environment ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mule-app-config
+  namespace: mule-test
+data:
+  MULE_ENV: "test"
+  DB_HOST: "postgres-test.mule-test.svc.cluster.local"
+  DB_PORT: "5432"
+  DB_NAME: "ft_trading"
+  DB_USER: "ft_reader"
+  HTTP_HOST: "0.0.0.0"
+  HTTP_PORT: "8081"
+---
+# Test Environment Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mule-app-secrets
+  namespace: mule-test
+type: Opaque
+data:
+  DB_PASSWORD: dGVzdF9wYXNzd29yZA==  # test_password base64 encoded
+---
+# Test PostgreSQL Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-test
+  namespace: mule-test
+spec:
+  selector:
+    app: postgres-test
+  ports:
+  - port: 5432
+    targetPort: 5432
+  type: ClusterIP
+---
+# Test PostgreSQL Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-test
+  namespace: mule-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-test
+  template:
+    metadata:
+      labels:
+        app: postgres-test
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15
+        env:
+        - name: POSTGRES_DB
+          value: "ft_trading"
+        - name: POSTGRES_USER
+          value: "postgres"
+        - name: POSTGRES_PASSWORD
+          value: "test_password"
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: init-script
+          mountPath: /docker-entrypoint-initdb.d
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-test-pvc
+      - name: init-script
+        configMap:
+          name: postgres-init-script

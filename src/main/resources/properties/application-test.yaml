@@ -1,0 +1,5 @@
+db:
+  host: "test-db.internal"
+  port: "5432"
+  url: "jdbc:postgresql://${db.host}:${db.port}/${db.name}?sslmode=require"
+  user: "ft_reader"

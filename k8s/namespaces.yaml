@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mule-dev
+  labels:
+    environment: development
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mule-test
+  labels:
+    environment: testing
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mule-prod
+  labels:
+    environment: production

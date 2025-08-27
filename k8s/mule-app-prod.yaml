@@ -1,0 +1,131 @@
+# Mule Application Deployment for Development Environment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mule-app
+  namespace: mule-prod
+  labels:
+    app: mule-app
+    environment: dev
+spec:
+  replicas: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: mule-app
+      environment: dev
+  template:
+    metadata:
+      labels:
+        app: mule-app
+        environment: dev
+    spec:
+      containers:
+      - name: mule-app
+        image: mule-trading-app:latest
+        imagePullPolicy: Never
+        env:
+        - name: MULE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: mule-app-config
+              key: MULE_ENV
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mule-app-secrets
+              key: DB_PASSWORD
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: mule-app-config
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: mule-app-config
+              key: DB_PORT
+        - name: DB_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: mule-app-config
+              key: DB_NAME
+        - name: DB_USER
+          valueFrom:
+            configMapKeyRef:
+              name: mule-app-config
+              key: DB_USER
+        - name: NODE_ENV
+          value: "production"
+        ports:
+        - containerPort: 8081
+          name: http
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "300m"
+        livenessProbe:
+          httpGet:
+            path: /kb
+            port: 8081
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /kb
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mule-app-service
+  namespace: mule-prod
+  labels:
+    app: mule-app
+    environment: dev
+spec:
+  selector:
+    app: mule-app
+    environment: dev
+  ports:
+  - name: http
+    port: 8081
+    targetPort: 8081
+    protocol: TCP
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mule-app-hpa
+  namespace: mule-prod
+  labels:
+    app: mule-app
+    environment: dev
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mule-app
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

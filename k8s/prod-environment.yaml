@@ -1,0 +1,118 @@
+# Production Environment ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mule-app-config
+  namespace: mule-prod
+data:
+  MULE_ENV: "prod"
+  DB_HOST: "postgres-prod.mule-prod.svc.cluster.local"
+  DB_PORT: "5432"
+  DB_NAME: "ft_trading"
+  DB_USER: "ft_app"
+  HTTP_HOST: "0.0.0.0"
+  HTTP_PORT: "8081"
+---
+# Production Environment Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mule-app-secrets
+  namespace: mule-prod
+type: Opaque
+data:
+  DB_PASSWORD: cHJvZF9zdXBlcl9zZWN1cmVfcGFzc3dvcmQ=  # prod_super_secure_password base64 encoded
+---
+# Production PostgreSQL Service with High Availability
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-prod
+  namespace: mule-prod
+spec:
+  selector:
+    app: postgres-prod
+  ports:
+  - port: 5432
+    targetPort: 5432
+  type: ClusterIP
+---
+# Production PostgreSQL StatefulSet for HA
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-prod
+  namespace: mule-prod
+spec:
+  serviceName: postgres-prod
+  replicas: 2  # Primary + Replica for failover
+  selector:
+    matchLabels:
+      app: postgres-prod
+  template:
+    metadata:
+      labels:
+        app: postgres-prod
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15
+        env:
+        - name: POSTGRES_DB
+          value: "ft_trading"
+        - name: POSTGRES_USER
+          value: "postgres"
+        - name: POSTGRES_PASSWORD
+          value: "prod_super_secure_password"
+        - name: POSTGRES_REPLICATION_MODE
+          value: "master"
+        - name: POSTGRES_REPLICATION_USER
+          value: "replicator"
+        - name: POSTGRES_REPLICATION_PASSWORD
+          value: "repl_password"
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: init-script
+          mountPath: /docker-entrypoint-initdb.d
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "1000m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - exec pg_isready -U postgres -h 127.0.0.1 -p 5432
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - exec pg_isready -U postgres -h 127.0.0.1 -p 5432
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 1
+      volumes:
+      - name: init-script
+        configMap:
+          name: postgres-init-script
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 10Gi

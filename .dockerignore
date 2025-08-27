@@ -1,0 +1,12 @@
+# Docker ignore file
+target/
+.git/
+.gitignore
+*.md
+.settings/
+.project
+.classpath
+.studio_analytics_id.txt
+.mule/
+k8s/
+logs/

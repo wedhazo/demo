@@ -1,0 +1,153 @@
+# JFrog Artifactory for Artifact Management
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: artifactory
+---
+# Artifactory PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: artifactory-pvc
+  namespace: artifactory
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+# Artifactory Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: artifactory
+  namespace: artifactory
+  labels:
+    app: artifactory
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: artifactory
+  template:
+    metadata:
+      labels:
+        app: artifactory
+    spec:
+      containers:
+      - name: artifactory
+        image: docker.bintray.io/jfrog/artifactory-oss:latest
+        ports:
+        - containerPort: 8081
+        - containerPort: 8082
+        env:
+        - name: DB_TYPE
+          value: "postgresql"
+        - name: DB_HOST
+          value: "postgres-artifactory"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_USER
+          value: "artifactory"
+        - name: DB_PASSWORD
+          value: "artifactory123"
+        - name: ARTIFACTORY_HOME
+          value: "/opt/jfrog/artifactory"
+        volumeMounts:
+        - name: artifactory-data
+          mountPath: /opt/jfrog/artifactory/var
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+      volumes:
+      - name: artifactory-data
+        persistentVolumeClaim:
+          claimName: artifactory-pvc
+---
+# Artifactory Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: artifactory-service
+  namespace: artifactory
+  labels:
+    app: artifactory
+spec:
+  ports:
+  - port: 8081
+    targetPort: 8081
+    name: web
+  - port: 8082
+    targetPort: 8082
+    name: docker-registry
+  selector:
+    app: artifactory
+  type: ClusterIP
+---
+# PostgreSQL for Artifactory
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-artifactory
+  namespace: artifactory
+  labels:
+    app: postgres-artifactory
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-artifactory
+  template:
+    metadata:
+      labels:
+        app: postgres-artifactory
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15
+        env:
+        - name: POSTGRES_DB
+          value: "artifactory"
+        - name: POSTGRES_USER
+          value: "artifactory"
+        - name: POSTGRES_PASSWORD
+          value: "artifactory123"
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+      volumes:
+      - name: postgres-data
+        emptyDir: {}
+---
+# PostgreSQL Service for Artifactory
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-artifactory
+  namespace: artifactory
+  labels:
+    app: postgres-artifactory
+spec:
+  ports:
+  - port: 5432
+    targetPort: 5432
+  selector:
+    app: postgres-artifactory
+  type: ClusterIP

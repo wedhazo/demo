@@ -1,0 +1,104 @@
+# Monitoring and observability setup
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    rule_files:
+      - "mule_rules.yml"
+
+    scrape_configs:
+      - job_name: 'mule-app-dev'
+        static_configs:
+          - targets: ['mule-app-service.mule-dev.svc.cluster.local:8081']
+        metrics_path: /actuator/prometheus
+        scrape_interval: 30s
+
+      - job_name: 'mule-app-test'
+        static_configs:
+          - targets: ['mule-app-service.mule-test.svc.cluster.local:8081']
+        metrics_path: /actuator/prometheus
+        scrape_interval: 30s
+
+      - job_name: 'mule-app-prod'
+        static_configs:
+          - targets: ['mule-app-service.mule-prod.svc.cluster.local:8081']
+        metrics_path: /actuator/prometheus
+        scrape_interval: 15s
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets:
+              - alertmanager:9093
+
+  mule_rules.yml: |
+    groups:
+    - name: mule_application
+      rules:
+      - alert: MuleAppDown
+        expr: up{job=~"mule-app-.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Mule application is down"
+          description: "Mule application {{ $labels.instance }} has been down for more than 1 minute."
+
+      - alert: MuleAppHighMemoryUsage
+        expr: (container_memory_usage_bytes{pod=~"mule-app-.*"} / container_spec_memory_limit_bytes{pod=~"mule-app-.*"}) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mule application high memory usage"
+          description: "Mule application {{ $labels.pod }} memory usage is above 80% for more than 5 minutes."
+
+      - alert: MuleAppHighCPUUsage
+        expr: (rate(container_cpu_usage_seconds_total{pod=~"mule-app-.*"}[5m]) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mule application high CPU usage"
+          description: "Mule application {{ $labels.pod }} CPU usage is above 80% for more than 5 minutes."
+
+      - alert: MuleAppDatabaseConnectionFailed
+        expr: increase(mule_database_connection_errors_total[5m]) > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Mule application database connection failures"
+          description: "Mule application {{ $labels.instance }} has {{ $value }} database connection failures in the last 5 minutes."
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+# ServiceMonitor for Prometheus to scrape Mule apps
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mule-app-metrics
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: mule-app
+  endpoints:
+  - port: http
+    path: /actuator/prometheus
+    interval: 30s
+  namespaceSelector:
+    matchNames:
+    - mule-dev
+    - mule-test
+    - mule-prod

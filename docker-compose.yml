@@ -1,0 +1,127 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    container_name: mule-postgres
+    environment:
+      POSTGRES_DB: ft_trading
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: beriha@123KB!
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5433:5432"  # Use different port to avoid conflict
+    networks:
+      - mule-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Mule Application - Development
+  mule-app-dev:
+    build: .
+    container_name: mule-app-dev
+    environment:
+      - MULE_ENV=dev
+      - DB_PASSWORD=beriha@123KB!
+      - JAVA_OPTS=-Dmule.env=dev -Xms512m -Xmx1024m
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mule-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/kb"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Mule Application - Test (different port)
+  mule-app-test:
+    build: .
+    container_name: mule-app-test
+    environment:
+      - MULE_ENV=test
+      - DB_PASSWORD=beriha@123KB!
+      - JAVA_OPTS=-Dmule.env=test -Xms768m -Xmx1536m
+    ports:
+      - "8082:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mule-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/kb"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Load Balancer (NGINX)
+  nginx:
+    image: nginx:alpine
+    container_name: mule-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - mule-app-dev
+      - mule-app-test
+    networks:
+      - mule-network
+
+  # Monitoring - Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: mule-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - mule-network
+
+  # Monitoring - Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mule-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - mule-network
+
+volumes:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  mule-network:
+    driver: bridge
